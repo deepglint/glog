@@ -77,8 +77,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -101,7 +103,8 @@ const (
 	numSeverity = 4
 )
 
-const severityChar = "IWEF"
+// const severityChar = "IWEF"
+var severityString = []string{"INFO", "WARNING", "ERROR", "FATAL"}
 
 var severityName = []string{
 	infoLog:    "INFO",
@@ -454,7 +457,7 @@ type loggingT struct {
 // buffer holds a byte Buffer for reuse. The zero value is ready for use.
 type buffer struct {
 	bytes.Buffer
-	tmp  [64]byte // temporary byte array for creating headers.
+	tmp  [128]byte // temporary byte array for creating headers.
 	next *buffer
 }
 
@@ -550,29 +553,47 @@ func (l *loggingT) header(s severity) *buffer {
 
 	// Avoid Fprintf, for speed. The format is so simple that we can do it quickly by hand.
 	// It's worth about 3X. Fprintf is hard.
-	_, month, day := now.Date()
-	hour, minute, second := now.Clock()
-	buf.tmp[0] = severityChar[s]
-	buf.twoDigits(1, int(month))
-	buf.twoDigits(3, day)
-	buf.tmp[5] = ' '
-	buf.twoDigits(6, hour)
-	buf.tmp[8] = ':'
-	buf.twoDigits(9, minute)
-	buf.tmp[11] = ':'
-	buf.twoDigits(12, second)
-	buf.tmp[14] = '.'
-	buf.nDigits(6, 15, now.Nanosecond()/1000)
-	buf.tmp[21] = ' '
-	buf.nDigits(5, 22, pid) // TODO: should be TID
-	buf.tmp[27] = ' '
-	buf.Write(buf.tmp[:28])
-	buf.WriteString(file)
-	buf.tmp[0] = ':'
-	n := buf.someDigits(1, line)
-	buf.tmp[n+1] = ']'
-	buf.tmp[n+2] = ' '
-	buf.Write(buf.tmp[:n+3])
+	// year, month, day := now.Date()
+	// hour, minute, second := now.Clock()
+	// buf.tmp[0] = severityChar[s]
+	// buf.twoDigits(1, int(month))
+	// buf.twoDigits(3, day)
+	// buf.tmp[5] = ' '
+	// buf.twoDigits(6, hour)
+	// buf.tmp[8] = ':'
+	// buf.twoDigits(9, minute)
+	// buf.tmp[11] = ':'
+	// buf.twoDigits(12, second)
+	// buf.tmp[14] = '.'
+	// buf.nDigits(6, 15, now.Nanosecond()/1000)
+	// buf.tmp[21] = ' '
+	// buf.nDigits(5, 22, pid) // TODO: should be TID
+	// buf.tmp[27] = ' '
+	// buf.Write(buf.tmp[:28])
+	// buf.WriteString(file)
+	// buf.tmp[0] = ':'
+	// n := buf.someDigits(1, line)
+	// buf.tmp[n+1] = ']'
+	// buf.tmp[n+2] = ' '
+	// buf.Write(buf.tmp[:n+3])
+
+	//////////////////////////////////////////////////////////
+	severitykv := "{\"type\":\"" + severityString[s] + "\","
+	buf.WriteString(severitykv)
+	// for i = n; i < 8; i++ {
+	// 	buf.tmp[i] = ' '
+	// }
+
+	timekv := "\"@timestamp\":\"" + now.String() + "\","
+	buf.WriteString(timekv)
+
+	pidkv := "\"pid\":\"" + strconv.Itoa(pid) + "\","
+	buf.WriteString(pidkv)
+
+	positonkv := "\"debug\":\"" + file + ":" + strconv.Itoa(line) + "\","
+	buf.WriteString(positonkv)
+
+	//////////////////////////////////////////////////////////
 	return buf
 }
 
@@ -613,13 +634,17 @@ func (buf *buffer) someDigits(i, d int) int {
 
 func (l *loggingT) println(s severity, args ...interface{}) {
 	buf := l.header(s)
-	fmt.Fprintln(buf, args...)
+	buf.WriteString("\"message\":\"")
+	fmt.Fprintln(buf, args)
+	buf.WriteString("\"}")
 	l.output(s, buf)
 }
 
 func (l *loggingT) print(s severity, args ...interface{}) {
 	buf := l.header(s)
+	buf.WriteString("\"message\":\"")
 	fmt.Fprint(buf, args...)
+	buf.WriteString("\"}")
 	if buf.Bytes()[buf.Len()-1] != '\n' {
 		buf.WriteByte('\n')
 	}
@@ -628,16 +653,50 @@ func (l *loggingT) print(s severity, args ...interface{}) {
 
 func (l *loggingT) printf(s severity, format string, args ...interface{}) {
 	buf := l.header(s)
+	buf.WriteString("\"message\":\"")
 	fmt.Fprintf(buf, format, args...)
+	buf.WriteString("\"}")
 	if buf.Bytes()[buf.Len()-1] != '\n' {
 		buf.WriteByte('\n')
 	}
 	l.output(s, buf)
 }
 
+// parse args... into string
+func parseArgs(args ...interface{}) string {
+	var result string = ""
+	log.Println(args)
+	for _, arg := range args {
+		t := reflect.TypeOf(arg).String()
+		v := reflect.ValueOf(arg)
+		var vs string = ""
+		switch t {
+		case "int", "int8", "int16", "int32", "int64":
+			vi := v.Int()
+			vs = strconv.FormatInt(vi, 10)
+		case "uint8", "uint16", "uint32", "uint64":
+			vu := v.Uint()
+			vs = strconv.FormatUint(vu, 10)
+		case "float32", "float64":
+			vf := v.Float()
+			vs = strconv.FormatFloat(vf, 'f', -1, 64)
+		case "string":
+			vs = v.String()
+		case "bool":
+			vb := v.Bool()
+			vs = strconv.FormatBool(vb)
+		default:
+			vs = ""
+		}
+		result = result + vs + " "
+	}
+	return result
+}
+
 // output writes the data to the log files and releases the buffer.
 func (l *loggingT) output(s severity, buf *buffer) {
 	l.mu.Lock()
+
 	if l.traceLocation.isSet() {
 		_, file, line, ok := runtime.Caller(3) // It's always the same number of frames to the user's call (same as header).
 		if ok && l.traceLocation.match(file, line) {
@@ -802,7 +861,7 @@ func (sb *syncBuffer) rotateFile(now time.Time) error {
 	fmt.Fprintf(&buf, "Log file created at: %s\n", now.Format("2006/01/02 15:04:05"))
 	fmt.Fprintf(&buf, "Running on machine: %s\n", host)
 	fmt.Fprintf(&buf, "Binary: Built with %s %s for %s/%s\n", runtime.Compiler, runtime.Version(), runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintf(&buf, "Log line format: [IWEF]mmdd hh:mm:ss.uuuuuu threadid file:line] msg\n")
+	fmt.Fprintf(&buf, "Log line format: [IWEF] mmdd hh:mm:ss.uuuuuu threadid file:line msg\n")
 	n, err := sb.file.Write(buf.Bytes())
 	sb.nbytes += uint64(n)
 	return err
