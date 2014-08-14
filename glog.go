@@ -106,6 +106,8 @@ const (
 // const severityChar = "IWEF"
 var severityString = []string{"INFO", "WARNING", "ERROR", "FATAL"}
 
+// var program = filepath.Base(os.Args[0])
+
 var severityName = []string{
 	infoLog:    "INFO",
 	warningLog: "WARNING",
@@ -587,12 +589,17 @@ func (l *loggingT) header(s severity) *buffer {
 	timekv := "\"@timestamp\":\"" + now.String() + "\","
 	buf.WriteString(timekv)
 
+	// hostkv := "\"host\":\"" + ip + "\","
+	// buf.WriteString(hostkv)
+
+	processkv := "\"process\":\"" + program + "\","
+	buf.WriteString(processkv)
+
 	pidkv := "\"pid\":\"" + strconv.Itoa(pid) + "\","
 	buf.WriteString(pidkv)
 
 	positonkv := "\"debug\":\"" + file + ":" + strconv.Itoa(line) + "\","
 	buf.WriteString(positonkv)
-
 	//////////////////////////////////////////////////////////
 	return buf
 }
@@ -861,7 +868,7 @@ func (sb *syncBuffer) rotateFile(now time.Time) error {
 	fmt.Fprintf(&buf, "Log file created at: %s\n", now.Format("2006/01/02 15:04:05"))
 	fmt.Fprintf(&buf, "Running on machine: %s\n", host)
 	fmt.Fprintf(&buf, "Binary: Built with %s %s for %s/%s\n", runtime.Compiler, runtime.Version(), runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintf(&buf, "Log line format: [IWEF] mmdd hh:mm:ss.uuuuuu threadid file:line msg\n")
+	fmt.Fprintf(&buf, "Log line format: [IWEF] mmdd hh:mm:ss.uuuuuu thread threadid file:line msg\n")
 	n, err := sb.file.Write(buf.Bytes())
 	sb.nbytes += uint64(n)
 	return err

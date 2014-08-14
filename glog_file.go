@@ -22,6 +22,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -52,6 +53,7 @@ var (
 	program  = filepath.Base(os.Args[0])
 	host     = "unknownhost"
 	userName = "unknownuser"
+	ip       = "unknownip"
 )
 
 func init() {
@@ -67,6 +69,48 @@ func init() {
 
 	// Sanitize userName since it may contain filepath separators on Windows.
 	userName = strings.Replace(userName, `\`, "_", -1)
+
+	// externalip, err := getIP()
+	// if err == nil {
+	// 	ip = externalip
+	// }
+}
+
+func getIP() (string, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", err
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue // interface down
+		}
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue // loopback interface
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return "", err
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil || ip.IsLoopback() {
+				continue
+			}
+			ip = ip.To4()
+			if ip == nil {
+				continue // not an ipv4 address
+			}
+			return ip.String(), nil
+		}
+	}
+	return "", errors.New("Error connecting to network")
 }
 
 // shortHostname returns its argument, truncating at the first period.
@@ -93,7 +137,7 @@ func logName(tag string, t time.Time) (name, link string) {
 	// 	t.Minute(),
 	// 	t.Second(),
 	// 	pid)
-	name = fmt.Sprintf("%s.%s", program, tag)
+	name = fmt.Sprintf("logs.%s", tag)
 	return name, tag + "." + program
 }
 
