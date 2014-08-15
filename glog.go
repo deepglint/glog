@@ -642,8 +642,8 @@ func (buf *buffer) someDigits(i, d int) int {
 func (l *loggingT) println(s severity, args ...interface{}) {
 	buf := l.header(s)
 	buf.WriteString("\"message\":\"")
-	fmt.Fprintln(buf, args)
-	buf.WriteString("\"}")
+	fmt.Fprint(buf, args...)
+	buf.WriteString("\"}\n")
 	l.output(s, buf)
 }
 
