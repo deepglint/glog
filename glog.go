@@ -586,7 +586,7 @@ func (l *loggingT) header(s severity) *buffer {
 	// 	buf.tmp[i] = ' '
 	// }
 
-	timekv := "\"@timestamp\":\"" + now.Format("20060102T150405Z") + "\","
+	timekv := "\"time\":\"" + now.Format("2006-01-02T15:04:05Z") + "\","
 	buf.WriteString(timekv)
 
 	// hostkv := "\"host\":\"" + ip + "\","
