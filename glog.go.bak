@@ -86,7 +86,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -400,13 +399,11 @@ type flushSyncWriter interface {
 func init() {
 	flag.BoolVar(&logging.toStderr, "logtostderr_deepglint", false, "log to standard error instead of files")
 	flag.BoolVar(&logging.alsoToStderr, "alsologtostderr_deepglint", false, "log to standard error as well as files")
-	flag.BoolVar(&logging.debug, "debug", false, "set debug to true to output local debug file")
 	flag.Var(&logging.verbosity, "v_deepglint", "log level for V logs")
 	flag.Var(&logging.stderrThreshold, "stderr", "logs at or above this threshold go to stderr")
 	flag.Var(&logging.vmodule, "vmodule_deepglint", "comma-separated list of pattern=N settings for file-filtered logging")
 	flag.Var(&logging.traceLocation, "log_backtrace_at_deepglint", "when logging hits line file:N, emit a stack trace")
-	flag.StringVar(&logging.table, "table_name", "libra", "table name for database")
-	flag.IntVar(&logging.logLevel, "log_level", 1, "0 for all log, 1 for log above warning, 2 for log above error, 3 for fatal only, 4 for no log, default set to 1")
+
 	// Default stderrThreshold is ERROR.
 	logging.stderrThreshold = errorLog
 
@@ -441,7 +438,7 @@ type loggingT struct {
 	// used to synchronize logging.
 	mu sync.Mutex
 	// file holds writer for each of the log types.
-	file [numSeverity]*syncBuffer
+	file [numSeverity]flushSyncWriter
 	// pcs is used in V to avoid an allocation when computing the caller's PC.
 	pcs [1]uintptr
 	// vmap is a cache of the V Level for each V() call site, identified by PC.
@@ -457,10 +454,6 @@ type loggingT struct {
 	// safely using atomic.LoadInt32.
 	vmodule   moduleSpec // The state of the -vmodule flag.
 	verbosity Level      // V logging level, the value of the -v flag/
-
-	debug    bool
-	table    string
-	logLevel int
 }
 
 // buffer holds a byte Buffer for reuse. The zero value is ready for use.
@@ -516,7 +509,6 @@ func (l *loggingT) putBuffer(b *buffer) {
 		return
 	}
 	l.freeListMu.Lock()
-	b.Reset()
 	b.next = l.freeList
 	l.freeList = b
 	l.freeListMu.Unlock()
@@ -542,7 +534,7 @@ where the fields are defined as follows:
 */
 func (l *loggingT) header(s severity) *buffer {
 	// Lmmdd hh:mm:ss.uuuuuu threadid file:line]
-	//now := timeNow()
+	now := timeNow()
 	_, file, line, ok := runtime.Caller(3) // It's always the same number of frames to the user's call.
 	if !ok {
 		file = "???"
@@ -588,46 +580,26 @@ func (l *loggingT) header(s severity) *buffer {
 	// buf.Write(buf.tmp[:n+3])
 
 	//////////////////////////////////////////////////////////
-	if !logging.debug {
-		buf.WriteString(logging.table)
+	severitykv := "{\"type\":\"" + severityString[s] + "\","
+	buf.WriteString(severitykv)
+	// for i = n; i < 8; i++ {
+	// 	buf.tmp[i] = ' '
+	// }
 
-		measurementkv := ",program=" + program
-		buf.WriteString(measurementkv)
+	timekv := "\"time\":\"" + now.Format("2006-01-02T15:04:05Z") + "\","
+	buf.WriteString(timekv)
 
-		severitykv := ",type=" + severityString[s]
-		buf.WriteString(severitykv)
+	// hostkv := "\"host\":\"" + ip + "\","
+	// buf.WriteString(hostkv)
 
-		pidkv := " value=" + strconv.Itoa(pid)
-		buf.WriteString(pidkv)
+	processkv := "\"process\":\"" + program + "\","
+	buf.WriteString(processkv)
 
-		positionkv := ",debug=\"" + file + ":" + strconv.Itoa(line) + " on " + time.Now().Format("2006-01-02T15:04:05Z") + "\""
-		buf.WriteString(positionkv)
-	} else {
+	pidkv := "\"pid\":\"" + strconv.Itoa(pid) + "\","
+	buf.WriteString(pidkv)
 
-		//////////////////////////////////////////////////////////
-		severitykv := "{\"type\":\"" + severityString[s] + "\","
-		buf.WriteString(severitykv)
-		// for i = n; i < 8; i++ {
-		// 	buf.tmp[i] = ' '
-		// }
-
-		timekv := "\"time\":\"" + time.Now().Format("2006-01-02T15:04:05Z") + "\","
-		// timekv := "\"time\":\"" + strconv.FormatInt(now.UnixNano(), 10) + "\","
-		buf.WriteString(timekv)
-
-		// hostkv := "\"host\":\"" + ip + "\","
-		// buf.WriteString(hostkv)
-
-		processkv := "\"process\":\"" + program + "\","
-		buf.WriteString(processkv)
-
-		pidkv := "\"pid\":\"" + strconv.Itoa(pid) + "\","
-		buf.WriteString(pidkv)
-
-		positonkv := "\"debug\":\"" + file + ":" + strconv.Itoa(line) + "\","
-		buf.WriteString(positonkv)
-		//////////////////////////////////////////////////////////
-	}
+	positonkv := "\"debug\":\"" + file + ":" + strconv.Itoa(line) + "\","
+	buf.WriteString(positonkv)
 	//////////////////////////////////////////////////////////
 	return buf
 }
@@ -669,39 +641,17 @@ func (buf *buffer) someDigits(i, d int) int {
 
 func (l *loggingT) println(s severity, args ...interface{}) {
 	buf := l.header(s)
-	if !logging.debug {
-		buf.WriteString(",message=")
-		tmpb := make([]byte, 0)
-		tmpbuf := bytes.NewBuffer(tmpb)
-		fmt.Fprint(tmpbuf, args...)
-		buf.WriteString(strconv.Quote(tmpbuf.String()))
-		buf.WriteString(" ")
-		timekv := strconv.FormatInt(time.Now().UnixNano(), 10) + "\n"
-		buf.WriteString(timekv)
-	} else {
-		buf.WriteString("\"message\":\"")
-		fmt.Fprint(buf, args...)
-		buf.WriteString("\"}\n")
-	}
+	buf.WriteString("\"message\":\"")
+	fmt.Fprint(buf, args...)
+	buf.WriteString("\"}\n")
 	l.output(s, buf)
 }
 
 func (l *loggingT) print(s severity, args ...interface{}) {
 	buf := l.header(s)
-	if !logging.debug {
-		buf.WriteString(",message=")
-		tmpb := make([]byte, 0)
-		tmpbuf := bytes.NewBuffer(tmpb)
-		fmt.Fprint(tmpbuf, args...)
-		buf.WriteString(strconv.Quote(tmpbuf.String()))
-		buf.WriteString(" ")
-		timekv := strconv.FormatInt(time.Now().UnixNano(), 10) + "\n"
-		buf.WriteString(timekv)
-	} else {
-		buf.WriteString("\"message\":\"")
-		fmt.Fprint(buf, args...)
-		buf.WriteString("\"}")
-	}
+	buf.WriteString("\"message\":\"")
+	fmt.Fprint(buf, args...)
+	buf.WriteString("\"}")
 	if buf.Bytes()[buf.Len()-1] != '\n' {
 		buf.WriteByte('\n')
 	}
@@ -710,20 +660,9 @@ func (l *loggingT) print(s severity, args ...interface{}) {
 
 func (l *loggingT) printf(s severity, format string, args ...interface{}) {
 	buf := l.header(s)
-	if !logging.debug {
-		buf.WriteString(",message=")
-		tmpb := make([]byte, 0)
-		tmpbuf := bytes.NewBuffer(tmpb)
-		fmt.Fprintf(tmpbuf, format, args...)
-		buf.WriteString(strconv.Quote(tmpbuf.String()))
-		buf.WriteString(" ")
-		timekv := strconv.FormatInt(time.Now().UnixNano(), 10) + "\n"
-		buf.WriteString(timekv)
-	} else {
-		buf.WriteString("\"message\":\"")
-		fmt.Fprintf(buf, format, args...)
-		buf.WriteString("\"}")
-	}
+	buf.WriteString("\"message\":\"")
+	fmt.Fprintf(buf, format, args...)
+	buf.WriteString("\"}")
 	if buf.Bytes()[buf.Len()-1] != '\n' {
 		buf.WriteByte('\n')
 	}
@@ -778,58 +717,24 @@ func (l *loggingT) output(s severity, buf *buffer) {
 		if l.alsoToStderr || s >= l.stderrThreshold.get() {
 			os.Stderr.Write(data)
 		}
-		if !logging.debug {
-			if l.file[infoLog] == nil {
-				if err := l.createFiles(infoLog); err != nil {
-					os.Stderr.Write(data) // Make sure the message appears somewhere.
-					l.exit(err)
-				}
+		if l.file[s] == nil {
+			if err := l.createFiles(s); err != nil {
+				os.Stderr.Write(data) // Make sure the message appears somewhere.
+				l.exit(err)
 			}
-			fname := fmt.Sprintf("%sLOG.%d-%02d-%dT00:00:00Z", *logDir, time.Now().Year(), time.Now().Month(), time.Now().Day())
-			if _, err := os.Open(fname); os.IsNotExist(err) || fname != currentLogFile {
-				currentLogFile = fname
-				fd, _ := os.OpenFile(fname, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-				sb := &syncBuffer{
-					logger: l,
-					sev:    infoLog,
-					file:   fd,
-					nbytes: 0,
-				}
-				sb.Writer = bufio.NewWriterSize(sb.file, bufferSize)
-				l.file[infoLog] = sb
-			}
-		WRITE_FILE:
-			tries := 0
-			err := syscall.Flock(int(l.file[infoLog].file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-			if err != nil && tries < 3 {
-				fmt.Println("Failed")
-				time.Sleep(time.Millisecond * 10)
-				tries++
-				goto WRITE_FILE
-			} else {
-				defer syscall.Flock(int(l.file[infoLog].file.Fd()), syscall.LOCK_UN)
-				l.file[infoLog].file.Write(data)
-			}
-		} else {
-			if l.file[s] == nil {
-				if err := l.createDebugFiles(s); err != nil {
-					os.Stderr.Write(data) // Make sure the message appears somewhere.
-					l.exit(err)
-				}
-			}
-			switch s {
-			case fatalLog:
-				l.file[fatalLog].Write(data)
-				fallthrough
-			case errorLog:
-				l.file[errorLog].Write(data)
-				fallthrough
-			case warningLog:
-				l.file[warningLog].Write(data)
-				fallthrough
-			case infoLog:
-				l.file[infoLog].Write(data)
-			}
+		}
+		switch s {
+		case fatalLog:
+			l.file[fatalLog].Write(data)
+			fallthrough
+		case errorLog:
+			l.file[errorLog].Write(data)
+			fallthrough
+		case warningLog:
+			l.file[warningLog].Write(data)
+			fallthrough
+		case infoLog:
+			l.file[infoLog].Write(data)
 		}
 	}
 	if s == fatalLog {
@@ -840,15 +745,9 @@ func (l *loggingT) output(s severity, buf *buffer) {
 		// Write the stack trace for all goroutines to the files.
 		trace := stacks(true)
 		logExitFunc = func(error) {} // If we get a write error, we'll still exit below.
-		if !logging.debug {
-			if f := l.file[infoLog]; f != nil { // Can be nil if -logtostderr is set.
+		for log := fatalLog; log >= infoLog; log-- {
+			if f := l.file[log]; f != nil { // Can be nil if -logtostderr is set.
 				f.Write(trace)
-			}
-		} else {
-			for log := fatalLog; log >= infoLog; log-- {
-				if f := l.file[log]; f != nil { // Can be nil if -logtostderr is set.
-					f.Write(trace)
-				}
 			}
 		}
 		l.mu.Unlock()
@@ -966,27 +865,6 @@ func (sb *syncBuffer) rotateFile(now time.Time) error {
 
 	// Write header.
 	var buf bytes.Buffer
-	n, err := sb.file.Write(buf.Bytes())
-	sb.nbytes += uint64(n)
-	return err
-}
-
-func (sb *syncBuffer) rotateDebugFile(now time.Time) error {
-	if sb.file != nil {
-		sb.Flush()
-		sb.file.Close()
-	}
-	var err error
-	sb.file, _, err = create(severityName[sb.sev], now)
-	sb.nbytes = 0
-	if err != nil {
-		return err
-	}
-
-	sb.Writer = bufio.NewWriterSize(sb.file, bufferSize)
-
-	// Write header.
-	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "Log file created at: %s\n", now.Format("2006/01/02 15:04:05"))
 	fmt.Fprintf(&buf, "Running on machine: %s\n", host)
 	fmt.Fprintf(&buf, "Binary: Built with %s %s for %s/%s\n", runtime.Compiler, runtime.Version(), runtime.GOOS, runtime.GOARCH)
@@ -1020,24 +898,7 @@ func (l *loggingT) createFiles(sev severity) error {
 	return nil
 }
 
-func (l *loggingT) createDebugFiles(sev severity) error {
-	now := time.Now()
-	// Files are created in decreasing severity order, so as soon as we find one
-	// has already been created, we can stop.
-	for s := sev; s >= infoLog && l.file[s] == nil; s-- {
-		sb := &syncBuffer{
-			logger: l,
-			sev:    s,
-		}
-		if err := sb.rotateDebugFile(now); err != nil {
-			return err
-		}
-		l.file[s] = sb
-	}
-	return nil
-}
-
-const flushInterval = 60 * time.Second
+const flushInterval = 30 * time.Second
 
 // flushDaemon periodically flushes the log file buffers.
 func (l *loggingT) flushDaemon() {
@@ -1057,22 +918,12 @@ func (l *loggingT) lockAndFlushAll() {
 // l.mu is held.
 func (l *loggingT) flushAll() {
 	// Flush from fatal down, in case there's trouble flushing.
-	file := l.file[infoLog]
-	if file == nil {
-		return
-	}
-RETRY:
-	err := syscall.Flock(int(file.file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-	if err == nil {
-		file.Flush() // ignore error
-		file.Sync()  // ignore error
-		defer syscall.Flock(int(file.file.Fd()), syscall.LOCK_UN)
-	} else if err != syscall.EWOULDBLOCK {
-		time.Sleep(time.Second)
-		goto RETRY
-	} else {
-		time.Sleep(time.Second)
-		goto RETRY
+	for s := fatalLog; s >= infoLog; s-- {
+		file := l.file[s]
+		if file != nil {
+			file.Flush() // ignore error
+			file.Sync()  // ignore error
+		}
 	}
 }
 
@@ -1176,98 +1027,74 @@ func (v Verbose) Infof(format string, args ...interface{}) {
 // Info logs to the INFO log.
 // Arguments are handled in the manner of fmt.Print; a newline is appended if missing.
 func Info(args ...interface{}) {
-	if logging.logLevel == 0 {
-		logging.print(infoLog, args...)
-	}
+	logging.print(infoLog, args...)
 }
 
 // Infoln logs to the INFO log.
 // Arguments are handled in the manner of fmt.Println; a newline is appended if missing.
 func Infoln(args ...interface{}) {
-	if logging.logLevel == 0 {
-		logging.println(infoLog, args...)
-	}
+	logging.println(infoLog, args...)
 }
 
 // Infof logs to the INFO log.
 // Arguments are handled in the manner of fmt.Printf; a newline is appended if missing.
 func Infof(format string, args ...interface{}) {
-	if logging.logLevel == 0 {
-		logging.printf(infoLog, format, args...)
-	}
+	logging.printf(infoLog, format, args...)
 }
 
 // Warning logs to the WARNING and INFO logs.
 // Arguments are handled in the manner of fmt.Print; a newline is appended if missing.
 func Warning(args ...interface{}) {
-	if logging.logLevel <= 1 {
-		logging.print(warningLog, args...)
-	}
+	logging.print(warningLog, args...)
 }
 
 // Warningln logs to the WARNING and INFO logs.
 // Arguments are handled in the manner of fmt.Println; a newline is appended if missing.
 func Warningln(args ...interface{}) {
-	if logging.logLevel <= 1 {
-		logging.println(warningLog, args...)
-	}
+	logging.println(warningLog, args...)
 }
 
 // Warningf logs to the WARNING and INFO logs.
 // Arguments are handled in the manner of fmt.Printf; a newline is appended if missing.
 func Warningf(format string, args ...interface{}) {
-	if logging.logLevel <= 1 {
-		logging.printf(warningLog, format, args...)
-	}
+	logging.printf(warningLog, format, args...)
 }
 
 // Error logs to the ERROR, WARNING, and INFO logs.
 // Arguments are handled in the manner of fmt.Print; a newline is appended if missing.
 func Error(args ...interface{}) {
-	if logging.logLevel <= 2 {
-		logging.print(errorLog, args...)
-	}
+	logging.print(errorLog, args...)
 }
 
 // Errorln logs to the ERROR, WARNING, and INFO logs.
 // Arguments are handled in the manner of fmt.Println; a newline is appended if missing.
 func Errorln(args ...interface{}) {
-	if logging.logLevel <= 2 {
-		logging.println(errorLog, args...)
-	}
+	logging.println(errorLog, args...)
 }
 
 // Errorf logs to the ERROR, WARNING, and INFO logs.
 // Arguments are handled in the manner of fmt.Printf; a newline is appended if missing.
 func Errorf(format string, args ...interface{}) {
-	if logging.logLevel <= 2 {
-		logging.printf(errorLog, format, args...)
-	}
+	logging.printf(errorLog, format, args...)
 }
 
 // Fatal logs to the FATAL, ERROR, WARNING, and INFO logs,
 // including a stack trace of all running goroutines, then calls os.Exit(255).
 // Arguments are handled in the manner of fmt.Print; a newline is appended if missing.
 func Fatal(args ...interface{}) {
-	if logging.logLevel <= 3 {
-		logging.print(fatalLog, args...)
-	}
+	logging.print(fatalLog, args...)
 }
 
 // Fatalln logs to the FATAL, ERROR, WARNING, and INFO logs,
 // including a stack trace of all running goroutines, then calls os.Exit(255).
 // Arguments are handled in the manner of fmt.Println; a newline is appended if missing.
 func Fatalln(args ...interface{}) {
-	if logging.logLevel <= 3 {
-		logging.println(fatalLog, args...)
-	}
+	logging.println(fatalLog, args...)
 }
 
 // Fatalf logs to the FATAL, ERROR, WARNING, and INFO logs,
 // including a stack trace of all running goroutines, then calls os.Exit(255).
 // Arguments are handled in the manner of fmt.Printf; a newline is appended if missing.
 func Fatalf(format string, args ...interface{}) {
-	if logging.logLevel <= 3 {
-		logging.printf(fatalLog, format, args...)
-	}
+	logging.printf(fatalLog, format, args...)
 }

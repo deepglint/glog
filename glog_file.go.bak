@@ -19,13 +19,10 @@
 package glog
 
 import (
-	// "encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	// "io/ioutil"
 	"net"
-	// "net/http"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -40,17 +37,15 @@ var MaxSize uint64 = 1024 * 1024 * 1800
 // logDirs lists the candidate directories for new log files.
 var logDirs []string
 
-var currentLogFile string
-
 // If non-empty, overrides the choice of directory in which to write logs.
 // See createLogDirs for the full list of possible destinations.
-var logDir = flag.String("log_dir_deepglint", "/tmp/", "If non-empty, write log files in this directory")
+var logDir = flag.String("log_dir_deepglint", "", "If non-empty, write log files in this directory")
 
 func createLogDirs() {
 	if *logDir != "" {
 		logDirs = append(logDirs, *logDir)
 	}
-	logDirs = append(logDirs, "/tmp/")
+	logDirs = append(logDirs, os.TempDir())
 }
 
 var (
@@ -61,42 +56,17 @@ var (
 	ip       = "unknownip"
 )
 
-type SensorId struct {
-	Key           string
-	Value         string
-	ModifiedIndex int
-	CreatedIndex  int
-}
-
-type Sensor struct {
-	Action string
-	Node   SensorId
-}
-
 func init() {
-	// resp, err := http.Get("http://localhost:4001/v2/keys/config/global/sensor_uid")
-	// if err != nil || resp.StatusCode != 200 {
-	// 	// fmt.Printf("%v", err)
-	// 	// fmt.Println(os.Hostname())
-	// 	h, err := os.Hostname()
-	// 	if err == nil {
-	// 		host = shortHostname(h)
-	// 	}
-	// } else {
-	// 	defer resp.Body.Close()
-	// 	body, err := ioutil.ReadAll(resp.Body)
-	// 	fmt.Printf("%s", string(body))
-	// 	var sen Sensor
-	// 	err = json.Unmarshal(body, &sen)
-	// 	if err == nil {
-	// 		host = sen.Node.Value
-	// 	}
+	h, err := os.Hostname()
+	if err == nil {
+		host = shortHostname(h)
+	}
 
-	// }
 	current, err := user.Current()
 	if err == nil {
 		userName = current.Username
 	}
+
 	// Sanitize userName since it may contain filepath separators on Windows.
 	userName = strings.Replace(userName, `\`, "_", -1)
 
@@ -167,12 +137,8 @@ func logName(tag string, t time.Time) (name, link string) {
 	// 	t.Minute(),
 	// 	t.Second(),
 	// 	pid)
-	//name = fmt.Sprintf(".%s", tag)
-	if !logging.debug {
-		return fmt.Sprintf("LOG.%d-%02d-%dT00:00:00Z", time.Now().Year(), time.Now().Month(), time.Now().Day()), "LOG.IWEF." + time.Now().Round(time.Hour*24).Format("2006-01-02T15:04:05Z")
-	} else {
-		return "DEBUGLOGS." + tag, "DEBUG" + name + "." + program
-	}
+	name = fmt.Sprintf("logs.%s", tag)
+	return name, tag + "." + program
 }
 
 var onceLogDirs sync.Once
@@ -182,27 +148,22 @@ var onceLogDirs sync.Once
 // successfully, create also attempts to update the symlink for that tag, ignoring
 // errors.
 func create(tag string, t time.Time) (f *os.File, filename string, err error) {
-	// onceLogDirs.Do(createLogDirs)
-	// if len(logDirs) == 0 {
-	// 	return nil, "", errors.New("log: no log dirs")
-	// }
+	onceLogDirs.Do(createLogDirs)
+	if len(logDirs) == 0 {
+		return nil, "", errors.New("log: no log dirs")
+	}
 	name, link := logName(tag, t)
-	// name, _ := logName(tag, t)
-	// var lastErr error
-	// for _, dir := range logDirs {
-	fname := filepath.Join(*logDir, name)
-	currentLogFile = fname
-	//f, err := os.Create(fname)
-	fd, err := os.OpenFile(fname, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	if err == nil {
-		if logging.debug {
-			symlink := filepath.Join(*logDir, link)
+	var lastErr error
+	for _, dir := range logDirs {
+		fname := filepath.Join(dir, name)
+		f, err := os.Create(fname)
+		if err == nil {
+			symlink := filepath.Join(dir, link)
 			os.Remove(symlink)        // ignore err
 			os.Symlink(name, symlink) // ignore err
+			return f, fname, nil
 		}
-		return fd, fname, nil
+		lastErr = err
 	}
-	// lastErr = err
-	// }
-	return nil, "", fmt.Errorf("log: cannot create log: %v", err)
+	return nil, "", fmt.Errorf("log: cannot create log: %v", lastErr)
 }
