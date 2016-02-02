@@ -785,7 +785,7 @@ func (l *loggingT) output(s severity, buf *buffer) {
 					l.exit(err)
 				}
 			}
-			fname := fmt.Sprintf("%sLOG.%d-%02d-%dT00:00:00Z", *logDir, time.Now().Year(), time.Now().Month(), time.Now().Day())
+			fname := fmt.Sprintf("%sLOG.%4d-%02d-%02dT00:00:00Z", *logDir, time.Now().Year(), time.Now().Month(), time.Now().Day())
 			if _, err := os.Open(fname); os.IsNotExist(err) || fname != currentLogFile {
 				currentLogFile = fname
 				fd, _ := os.OpenFile(fname, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
@@ -801,9 +801,8 @@ func (l *loggingT) output(s severity, buf *buffer) {
 		WRITE_FILE:
 			tries := 0
 			err := syscall.Flock(int(l.file[infoLog].file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-			if err != nil && tries < 3 {
-				fmt.Println("Failed")
-				time.Sleep(time.Millisecond * 10)
+			if err != nil && tries < 10 {
+				time.Sleep(time.Millisecond * 1)
 				tries++
 				goto WRITE_FILE
 			} else {

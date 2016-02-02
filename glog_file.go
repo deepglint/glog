@@ -169,7 +169,7 @@ func logName(tag string, t time.Time) (name, link string) {
 	// 	pid)
 	//name = fmt.Sprintf(".%s", tag)
 	if !logging.debug {
-		return fmt.Sprintf("LOG.%d-%02d-%dT00:00:00Z", time.Now().Year(), time.Now().Month(), time.Now().Day()), "LOG.IWEF." + time.Now().Round(time.Hour*24).Format("2006-01-02T15:04:05Z")
+		return fmt.Sprintf("LOG.%4d-%02d-%02dT00:00:00Z", time.Now().Year(), time.Now().Month(), time.Now().Day()), "LOG.IWEF." + time.Now().Round(time.Hour*24).Format("2006-01-02T15:04:05Z")
 	} else {
 		return "DEBUGLOGS." + tag, "DEBUG" + name + "." + program
 	}
